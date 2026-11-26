@@ -94,6 +94,14 @@ def main(argv=None):
 
     rt = sub.add_parser('retrain')
 
+    at = sub.add_parser('auto-train')
+    at.add_argument('--symbols', nargs='+', default=['EURUSD'])
+    at.add_argument('--timeframe', default='H1', choices=['M5', 'M15', 'H1', 'H4', 'D1'])
+    at.add_argument('--interval', type=float, default=24, help='Hours between cycles')
+    at.add_argument('--max-cycles', type=int, default=0, help='0=infinite')
+    at.add_argument('--once', action='store_true', help='Single cycle then exit')
+    at.add_argument('--all-symbols', action='store_true', help='Train on all scanned symbols')
+
     args = ap.parse_args(argv)
 
     if args.cmd == 'generate-demo':
@@ -229,6 +237,24 @@ def main(argv=None):
         learner = AutoLearner()
         result = learner.force_retrain()
         print(json.dumps(result, indent=2))
+
+    elif args.cmd == 'auto-train':
+        from .auto_learn import TrainingScheduler
+        symbols = args.symbols
+        if args.all_symbols:
+            from .scanner import get_available_symbols, ALL_WATCHLIST
+            available = get_available_symbols()
+            symbols = [s['symbol'] for s in available]
+            print(f'Training on {len(symbols)} available symbols')
+        scheduler = TrainingScheduler(
+            symbols=symbols, timeframe=args.timeframe,
+            interval_hours=args.interval,
+        )
+        if args.once:
+            report = scheduler.run_cycle()
+            print(json.dumps(report, indent=2))
+        else:
+            scheduler.run_loop(max_cycles=args.max_cycles)
 
 
 if __name__ == '__main__':

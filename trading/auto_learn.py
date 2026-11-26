@@ -364,3 +364,158 @@ class AutoLearner:
             'last_retrain_ago_hours': (time.time() - self.last_retrain) / 3600 if self.last_retrain else None,
             'retrain_interval_hours': self.retrain_interval / 3600,
         }
+
+
+class TrainingScheduler:
+    """Autonomous training scheduler — runs independently, produces reports."""
+
+    def __init__(self, symbols: list[str] | None = None,
+                 timeframe: str = 'H1',
+                 interval_hours: float = 24,
+                 config_path: str | None = None):
+        self.symbols = symbols or ['EURUSD']
+        self.timeframe = timeframe
+        self.interval = interval_hours * 3600
+        self.config_path = config_path
+        self.report_dir = REPORTS_DIR / 'training'
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        self.managers: dict[str, ModelManager] = {}
+        for sym in self.symbols:
+            self.managers[sym] = ModelManager(sym, config_path)
+
+    def _report_path(self, cycle_id: str) -> Path:
+        return self.report_dir / f'report_{cycle_id}.json'
+
+    def _emit(self, report: dict, cycle_id: str):
+        """Write report to file + log."""
+        path = self._report_path(cycle_id)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2)
+        logger.info('REPORT [%s] step=%s status=%s -> %s',
+                     cycle_id, report.get('step'), report.get('status'), path)
+
+    def run_cycle(self) -> dict:
+        """Full training cycle for all symbols, with step-by-step reports."""
+        cycle_id = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        report = {
+            'cycle_id': cycle_id,
+            'started': datetime.now(timezone.utc).isoformat(),
+            'symbols': self.symbols,
+            'timeframe': self.timeframe,
+            'steps': [],
+        }
+
+        self._step(report, cycle_id, 'STARTED', 'Training cycle initiated')
+
+        results_by_symbol = {}
+        for sym in self.symbols:
+            mgr = self.managers[sym]
+            sym_result = {'symbol': sym}
+
+            # Step 1: Data collection
+            self._step(report, cycle_id, 'DATA_COLLECT',
+                       f'Fetching {sym} bars from MT5', symbol=sym)
+            try:
+                prices = mgr.collect_latest_data(count=2000, timeframe=self.timeframe)
+                sym_result['bars_collected'] = len(prices)
+                self._step(report, cycle_id, 'DATA_OK',
+                           f'{sym}: {len(prices)} bars collected', symbol=sym)
+            except Exception as e:
+                sym_result['error'] = f'data_collect: {e}'
+                self._step(report, cycle_id, 'DATA_FAIL',
+                           f'{sym}: data collection failed — {e}', symbol=sym)
+                results_by_symbol[sym] = sym_result
+                continue
+
+            # Step 2: Evaluate current model
+            self._step(report, cycle_id, 'EVAL_CURRENT',
+                       f'Evaluating active model on {sym}', symbol=sym)
+            try:
+                if mgr.active_model.exists():
+                    active_eval = mgr.evaluate_model(prices, mgr.active_model)
+                    sym_result['active_eval'] = active_eval
+                    self._step(report, cycle_id, 'EVAL_CURRENT_OK',
+                               f'{sym}: active model acc={active_eval["accuracy"]:.3f} '
+                               f'ret={active_eval["return_pct"]:.2f}%', symbol=sym)
+                else:
+                    sym_result['active_eval'] = None
+                    self._step(report, cycle_id, 'EVAL_CURRENT_SKIP',
+                               f'{sym}: no active model, will train first', symbol=sym)
+            except Exception as e:
+                sym_result['active_eval'] = {'error': str(e)}
+                self._step(report, cycle_id, 'EVAL_CURRENT_FAIL',
+                           f'{sym}: eval failed — {e}', symbol=sym)
+
+            # Step 3: Retrain
+            self._step(report, cycle_id, 'RETRAIN',
+                       f'Training new candidate model for {sym}', symbol=sym)
+            try:
+                train_result = mgr.retrain(prices)
+                sym_result['train'] = train_result
+                self._step(report, cycle_id, 'RETRAIN_OK',
+                           f'{sym}: candidate trained acc={train_result["test_accuracy"]:.3f} '
+                           f'on {train_result["test_bars"]} test bars', symbol=sym)
+            except Exception as e:
+                sym_result['error'] = f'retrain: {e}'
+                self._step(report, cycle_id, 'RETRAIN_FAIL',
+                           f'{sym}: retrain failed — {e}', symbol=sym)
+                results_by_symbol[sym] = sym_result
+                continue
+
+            # Step 4: Compare + deploy
+            self._step(report, cycle_id, 'DEPLOY_CHECK',
+                       f'Comparing candidate vs active for {sym}', symbol=sym)
+            try:
+                deploy_result = mgr.deploy_if_better(prices)
+                sym_result['deploy'] = deploy_result
+                action = deploy_result.get('action', '?')
+                self._step(report, cycle_id, 'DEPLOY_DONE',
+                           f'{sym}: {action}', symbol=sym)
+            except Exception as e:
+                sym_result['deploy'] = {'error': str(e)}
+                self._step(report, cycle_id, 'DEPLOY_FAIL',
+                           f'{sym}: deploy check failed — {e}', symbol=sym)
+
+            results_by_symbol[sym] = sym_result
+
+        report['results'] = results_by_symbol
+        report['finished'] = datetime.now(timezone.utc).isoformat()
+        self._step(report, cycle_id, 'COMPLETED',
+                   f'Cycle done — {len(results_by_symbol)} symbols processed')
+
+        return report
+
+    def _step(self, report: dict, cycle_id: str, status: str, message: str,
+              symbol: str | None = None):
+        step = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'step': status,
+            'message': message,
+        }
+        if symbol:
+            step['symbol'] = symbol
+        report['steps'].append(step)
+        report['status'] = status
+        self._emit(report, cycle_id)
+
+    def run_loop(self, max_cycles: int = 0):
+        """Continuous training loop — runs every interval_hours."""
+        logger.info('=== TRAINING SCHEDULER START === symbols=%s interval=%.1fh',
+                     self.symbols, self.interval / 3600)
+        cycle = 0
+        while True:
+            cycle += 1
+            logger.info('--- Training cycle %d ---', cycle)
+            try:
+                report = self.run_cycle()
+                ok = sum(1 for r in report['results'].values() if 'error' not in r)
+                fail = len(report['results']) - ok
+                logger.info('Cycle %d done: %d ok, %d failed', cycle, ok, fail)
+            except Exception as e:
+                logger.error('Cycle %d crashed: %s', cycle, e, exc_info=True)
+
+            if 0 < max_cycles <= cycle:
+                break
+
+            logger.info('Next cycle in %.1f hours...', self.interval / 3600)
+            time.sleep(self.interval)
