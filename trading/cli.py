@@ -1,39 +1,99 @@
-import argparse,json
+import argparse, json
 from pathlib import Path
 import pandas as pd
-from .data import generate_demo,load_prices,features
-from .backtest import simulate,ema_signals,write_report,BacktestSettings
+from .data import generate_demo, load_prices, features
+from .backtest import simulate, ema_signals, write_report, BacktestSettings
 from .risk import RiskConfig
 
+
 def main(argv=None):
-    ap=argparse.ArgumentParser(description='Trading AI offline research tools (NO LIVE ORDERS)')
-    sub=ap.add_subparsers(dest='cmd',required=True)
-    g=sub.add_parser('generate-demo');g.add_argument('--output',default='data/demo.csv');g.add_argument('--rows',type=int,default=1600)
-    b=sub.add_parser('backtest');b.add_argument('--csv',default='data/demo.csv');b.add_argument('--prefix',default='baseline')
-    x=sub.add_parser('train-xgb');x.add_argument('--csv',default='data/demo.csv')
-    p=sub.add_parser('train-ppo');p.add_argument('--csv',default='data/demo.csv');p.add_argument('--steps',type=int,default=15000)
-    n=sub.add_parser('collect-news')
-    e=sub.add_parser('export-mt5');e.add_argument('--symbol',default='EURUSD');e.add_argument('--count',type=int,default=2000);e.add_argument('--output',default='data/mt5_demo.csv')
-    args=ap.parse_args(argv)
-    if args.cmd=='generate-demo':
-        df=generate_demo(args.output,args.rows);print(f'Generated {len(df)} SYNTHETIC candles -> {args.output}')
-    elif args.cmd=='backtest':
-        data=features(load_prices(args.csv))
-        s,d=simulate(data,ema_signals(data),BacktestSettings())
-        write_report(s,d,prefix=args.prefix);print(json.dumps(s,indent=2))
-    elif args.cmd=='train-xgb':
+    ap = argparse.ArgumentParser(description='Trading AI offline research tools (NO LIVE ORDERS)')
+    sub = ap.add_subparsers(dest='cmd', required=True)
+
+    g = sub.add_parser('generate-demo')
+    g.add_argument('--output', default='data/demo.csv')
+    g.add_argument('--rows', type=int, default=1600)
+
+    b = sub.add_parser('backtest')
+    b.add_argument('--csv', default='data/demo.csv')
+    b.add_argument('--prefix', default='baseline')
+
+    x = sub.add_parser('train-xgb')
+    x.add_argument('--csv', default='data/demo.csv')
+
+    p = sub.add_parser('train-ppo')
+    p.add_argument('--csv', default='data/demo.csv')
+    p.add_argument('--steps', type=int, default=15000)
+
+    n = sub.add_parser('collect-news')
+
+    e = sub.add_parser('export-mt5')
+    e.add_argument('--symbol', default='EURUSD')
+    e.add_argument('--count', type=int, default=2000)
+    e.add_argument('--output', default='data/mt5_demo.csv')
+
+    f = sub.add_parser('fetch-real')
+    f.add_argument('--symbol', default='EURUSD')
+    f.add_argument('--period', default='2y')
+    f.add_argument('--interval', default='1h')
+    f.add_argument('--output', default='data/real.csv')
+
+    w = sub.add_parser('walkforward')
+    w.add_argument('--csv', default='data/real.csv')
+    w.add_argument('--min-train', type=int, default=300)
+    w.add_argument('--test-window', type=int, default=100)
+    w.add_argument('--step', type=int, default=50)
+    w.add_argument('--prefix', default='walkforward')
+
+    args = ap.parse_args(argv)
+
+    if args.cmd == 'generate-demo':
+        df = generate_demo(args.output, args.rows)
+        print(f'Generated {len(df)} SYNTHETIC candles -> {args.output}')
+
+    elif args.cmd == 'backtest':
+        data = features(load_prices(args.csv))
+        s, d = simulate(data, ema_signals(data), BacktestSettings())
+        write_report(s, d, prefix=args.prefix)
+        print(json.dumps(s, indent=2))
+
+    elif args.cmd == 'train-xgb':
         from .ml import train_xgb
-        print(json.dumps(train_xgb(load_prices(args.csv)),indent=2))
-    elif args.cmd=='train-ppo':
+        print(json.dumps(train_xgb(load_prices(args.csv)), indent=2))
+
+    elif args.cmd == 'train-ppo':
         from .rl import train_ppo
-        print(json.dumps(train_ppo(load_prices(args.csv),timesteps=args.steps),indent=2))
-    elif args.cmd=='collect-news':
+        print(json.dumps(train_ppo(load_prices(args.csv), timesteps=args.steps), indent=2))
+
+    elif args.cmd == 'collect-news':
         from .news import collect
-        print(json.dumps(collect(),indent=2))
-    elif args.cmd=='export-mt5':
+        print(json.dumps(collect(), indent=2))
+
+    elif args.cmd == 'export-mt5':
         from .mt5_bridge import read_demo_bars
-        df=read_demo_bars(args.symbol,args.count)
-        dest=Path(args.output);dest.parent.mkdir(parents=True,exist_ok=True)
-        df.to_csv(dest,index=False)
+        df = read_demo_bars(args.symbol, args.count)
+        dest = Path(args.output)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(dest, index=False)
         print(f'Exported {len(df)} bars from DEMO -> {dest}')
-if __name__=='__main__':main()
+
+    elif args.cmd == 'fetch-real':
+        from .fetch import fetch_yahoo
+        df = fetch_yahoo(args.symbol, args.period, args.interval, args.output)
+        print(f'Fetched {len(df)} real bars ({args.symbol}) -> {args.output}')
+
+    elif args.cmd == 'walkforward':
+        from .walkforward import walk_forward_xgb, write_walkforward_report
+        prices = load_prices(args.csv)
+        result = walk_forward_xgb(
+            prices, min_train=args.min_train,
+            test_window=args.test_window, step=args.step
+        )
+        write_walkforward_report(result, prefix=args.prefix)
+        summary = {k: v for k, v in result.items() if k != 'folds'}
+        print(json.dumps(summary, indent=2))
+
+
+if __name__ == '__main__':
+    main()
+
