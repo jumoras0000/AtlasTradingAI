@@ -169,7 +169,7 @@ class MultiTrader:
         active_symbols = set(current.keys())
 
         # Close positions for symbols no longer favorable
-        favorable_symbols = {o['symbol'] for o in opportunities if o['direction'] == 'BUY'}
+        favorable_symbols = {o['symbol'] for o in opportunities}
         for sym in list(active_symbols):
             if sym not in favorable_symbols:
                 logger.info('Closing %s — no longer favorable', sym)
@@ -192,7 +192,8 @@ class MultiTrader:
             symbol = opp['symbol']
             if symbol in active_symbols:
                 continue
-            if opp['direction'] != 'BUY':  # Long only for now
+            direction = opp['direction']
+            if direction == 'FLAT':
                 continue
 
             target_exposure = min(
@@ -205,9 +206,10 @@ class MultiTrader:
             try:
                 sym_info = get_symbol_info(symbol)
                 value = target_exposure * equity
-                volume = value / (sym_info['trade_contract_size'] * sym_info['ask'])
+                price = sym_info['ask'] if direction == 'BUY' else sym_info['bid']
+                volume = value / (sym_info['trade_contract_size'] * price)
 
-                result = open_position(symbol, 'BUY', volume,
+                result = open_position(symbol, direction, volume,
                                        comment=f'Atlas_score={opp["score"]:.3f}')
                 self._log_trade('OPEN_OPPORTUNITY', {
                     'symbol': symbol,
