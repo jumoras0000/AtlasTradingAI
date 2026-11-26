@@ -31,11 +31,42 @@ def _init_mt5():
     except ImportError as e:
         raise RuntimeError('pip install -r requirements-mt5.txt') from e
 
+    _load_dotenv()
     path = os.getenv('MT5_TERMINAL_PATH') or None
-    ok = mt5.initialize(path=path) if path else mt5.initialize()
+    login = os.getenv('MT5_LOGIN')
+    password = os.getenv('MT5_PASSWORD')
+    server = os.getenv('MT5_SERVER')
+
+    kwargs = {}
+    if path:
+        kwargs['path'] = path
+    if login:
+        kwargs['login'] = int(login)
+    if password:
+        kwargs['password'] = password
+    if server:
+        kwargs['server'] = server
+
+    ok = mt5.initialize(**kwargs) if kwargs else mt5.initialize()
     if not ok:
         raise RuntimeError(f'MT5 init failed: {mt5.last_error()}')
     return mt5
+
+
+def _load_dotenv():
+    """Load .env file if present (no extra dependency)."""
+    env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+    if not os.path.isfile(env_path):
+        return
+    with open(env_path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, _, value = line.partition('=')
+            key, value = key.strip(), value.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 
 def _require_demo(mt5):
@@ -129,6 +160,17 @@ def _round_volume(volume: float, vol_min: float, vol_max: float, vol_step: float
     return round(steps * vol_step, 8)
 
 
+def _get_filling_mode(mt5, sym):
+    """Detect supported filling mode for a symbol."""
+    filling = sym.filling_mode
+    # filling_mode is a bitmask: bit 0 = FOK, bit 1 = IOC, bit 2 = RETURN
+    if filling & 1:
+        return mt5.ORDER_FILLING_FOK
+    if filling & 2:
+        return mt5.ORDER_FILLING_IOC
+    return mt5.ORDER_FILLING_RETURN
+
+
 def open_position(symbol: str, direction: str, volume: float,
                   sl_points: int = 0, tp_points: int = 0,
                   comment: str = 'AtlasAI_DEMO') -> OrderResult:
@@ -170,7 +212,7 @@ def open_position(symbol: str, direction: str, volume: float,
             'magic': 123456,
             'comment': comment,
             'type_time': mt5.ORDER_TIME_GTC,
-            'type_filling': mt5.ORDER_FILLING_IOC,
+            'type_filling': _get_filling_mode(mt5, sym),
         }
 
         result = mt5.order_send(request)
@@ -217,7 +259,7 @@ def close_position(ticket: int, comment: str = 'AtlasAI_DEMO_close') -> OrderRes
             'magic': 123456,
             'comment': comment,
             'type_time': mt5.ORDER_TIME_GTC,
-            'type_filling': mt5.ORDER_FILLING_IOC,
+            'type_filling': _get_filling_mode(mt5, sym),
         }
 
         result = mt5.order_send(request)
