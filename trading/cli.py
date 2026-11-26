@@ -78,6 +78,22 @@ def main(argv=None):
     cl = sub.add_parser('close-all')
     cl.add_argument('--symbol', default='EURUSD')
 
+    sc = sub.add_parser('scan')
+    sc.add_argument('--timeframe', default='H1')
+    sc.add_argument('--min-score', type=float, default=0.15)
+
+    mt = sub.add_parser('multi')
+    mt.add_argument('--timeframe', default='H1', choices=['M5', 'M15', 'H1', 'H4', 'D1'])
+    mt.add_argument('--max-positions', type=int, default=5)
+    mt.add_argument('--max-exposure', type=float, default=0.50)
+    mt.add_argument('--min-score', type=float, default=0.15)
+    mt.add_argument('--model', default='models/xgb.json')
+    mt.add_argument('--interval', type=int, default=0)
+    mt.add_argument('--max-iter', type=int, default=0)
+    mt.add_argument('--once', action='store_true')
+
+    rt = sub.add_parser('retrain')
+
     args = ap.parse_args(argv)
 
     if args.cmd == 'generate-demo':
@@ -185,6 +201,34 @@ def main(argv=None):
         from .mt5_executor import close_all
         results = close_all(args.symbol)
         print(json.dumps([r.__dict__ for r in results], indent=2))
+
+    elif args.cmd == 'scan':
+        from .scanner import scan_all
+        result = scan_all(timeframe=args.timeframe, min_confidence=args.min_score)
+        # Print summary
+        print(f"\n{'Symbol':<12} {'Direction':<8} {'Score':>8} {'Confidence':>10} {'Trend':>8} {'XGB':>6}")
+        print('-' * 60)
+        for o in result['opportunities']:
+            print(f"{o['symbol']:<12} {o['direction']:<8} {o['score']:>8.3f} {o['confidence']:>10.3f} {o['trend']:>8.4f} {o['xgb_proba']:>6.3f}")
+        print(f"\n{result['total_opportunities']} opportunities / {result['total_scanned']} scanned")
+
+    elif args.cmd == 'multi':
+        from .multi_trader import MultiTrader
+        interval = args.interval or {'M5': 300, 'M15': 900, 'H1': 3600, 'H4': 14400, 'D1': 86400}[args.timeframe]
+        trader = MultiTrader(
+            timeframe=args.timeframe, max_positions=args.max_positions,
+            max_total_exposure=args.max_exposure, min_score=args.min_score, model_path=args.model,
+        )
+        if args.once:
+            print(json.dumps(trader.run_once(), indent=2))
+        else:
+            trader.run_loop(interval_seconds=interval, max_iterations=args.max_iter)
+
+    elif args.cmd == 'retrain':
+        from .auto_learn import AutoLearner
+        learner = AutoLearner()
+        result = learner.force_retrain()
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == '__main__':
