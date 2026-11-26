@@ -94,6 +94,11 @@ def main(argv=None):
 
     rt = sub.add_parser('retrain')
 
+    qc = sub.add_parser('quality-check')
+    qc.add_argument('--symbol', default='EURUSD')
+
+    cv = sub.add_parser('convergence')
+
     at = sub.add_parser('auto-train')
     at.add_argument('--symbols', nargs='+', default=['EURUSD'])
     at.add_argument('--timeframe', default='H1', choices=['M5', 'M15', 'H1', 'H4', 'D1'])
@@ -231,6 +236,42 @@ def main(argv=None):
             print(json.dumps(trader.run_once(), indent=2))
         else:
             trader.run_loop(interval_seconds=interval, max_iterations=args.max_iter)
+
+    elif args.cmd == 'quality-check':
+        from .auto_learn import QualityGate, ModelManager
+        from .walkforward import walk_forward_xgb
+        mgr = ModelManager(args.symbol)
+        prices = mgr.collect_latest_data(count=2000)
+        eval_result = mgr.evaluate_model(prices, mgr.active_model)
+        wf = walk_forward_xgb(prices, min_train=300, test_window=100, step=50)
+        gate = QualityGate()
+        result = gate.evaluate(eval_result, wf)
+        print(f"\n{'Gate':<25} {'Value':>10} {'Threshold':>10} {'Status':>8}")
+        print('-' * 58)
+        for name, c in result['checks'].items():
+            v = c['value']
+            t = c['threshold']
+            s = 'PASS' if c['pass'] else 'FAIL'
+            print(f"{name:<25} {v:>10.3f} {t:>10.3f} {s:>8}")
+        print(f"\nVerdict: {result['verdict']}")
+        print(result['message'])
+
+    elif args.cmd == 'convergence':
+        from .auto_learn import QualityGate
+        gate = QualityGate()
+        summary = gate.convergence_summary()
+        if summary['status'] == 'no_data':
+            print('No training history yet. Run: python -m trading.cli auto-train --once')
+        else:
+            print(f"\nStatus: {summary['status']}")
+            print(f"Cycles: {summary['cycles_completed']}")
+            print(f"Consecutive pass: {summary['consecutive_pass']} / {summary['needed_consecutive']}")
+            print(f"Trend: {summary['trend']}")
+            print(f"\n{'Metric':<20} {'Current':>10} {'Target':>10} {'Progress':>10} {'Status':>8}")
+            print('-' * 63)
+            for name, p in summary.get('progress', {}).items():
+                print(f"{name:<20} {p['current']:>10.3f} {p['target']:>10.3f} {p['progress_pct']:>9.1f}% {'PASS' if p['pass'] else 'FAIL':>8}")
+            print(f"\n{summary['latest_message']}")
 
     elif args.cmd == 'retrain':
         from .auto_learn import AutoLearner

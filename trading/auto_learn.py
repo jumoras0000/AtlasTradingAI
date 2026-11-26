@@ -462,7 +462,30 @@ class TrainingScheduler:
                 results_by_symbol[sym] = sym_result
                 continue
 
-            # Step 4: Compare + deploy
+            # Step 4: Walk-forward validation
+            self._step(report, cycle_id, 'WALKFORWARD',
+                       f'Walk-forward validation for {sym}', symbol=sym)
+            wf_result = None
+            try:
+                from .walkforward import walk_forward_xgb
+                wf_result = walk_forward_xgb(prices, min_train=300, test_window=100, step=50)
+                n_folds = wf_result.get('n_folds', 0)
+                mean_acc = wf_result.get('mean_accuracy', 0)
+                mean_ret = wf_result.get('mean_return_pct', 0)
+                sym_result['walkforward'] = {
+                    'n_folds': n_folds, 'mean_accuracy': mean_acc,
+                    'mean_return_pct': mean_ret,
+                    'folds': wf_result.get('folds', []),
+                }
+                self._step(report, cycle_id, 'WALKFORWARD_OK',
+                           f'{sym}: {n_folds} folds, mean_acc={mean_acc:.3f} mean_ret={mean_ret:.2f}%',
+                           symbol=sym)
+            except Exception as e:
+                sym_result['walkforward'] = {'error': str(e)}
+                self._step(report, cycle_id, 'WALKFORWARD_FAIL',
+                           f'{sym}: walk-forward failed — {e}', symbol=sym)
+
+            # Step 5: Compare + deploy
             self._step(report, cycle_id, 'DEPLOY_CHECK',
                        f'Comparing candidate vs active for {sym}', symbol=sym)
             try:
@@ -476,12 +499,33 @@ class TrainingScheduler:
                 self._step(report, cycle_id, 'DEPLOY_FAIL',
                            f'{sym}: deploy check failed — {e}', symbol=sym)
 
+            # Step 6: Quality gate check
+            self._step(report, cycle_id, 'QUALITY_CHECK',
+                       f'Checking quality gates for {sym}', symbol=sym)
+            gate = QualityGate()
+            eval_for_gate = sym_result.get('active_eval') or sym_result.get('train', {})
+            if isinstance(eval_for_gate, dict) and 'error' not in eval_for_gate:
+                gate_result = gate.evaluate(eval_for_gate, wf_result)
+                sym_result['quality_gate'] = gate_result
+                verdict = gate_result['verdict']
+                msg = gate_result['message']
+                self._step(report, cycle_id, f'QUALITY_{verdict}',
+                           f'{sym}: {verdict} — {msg}', symbol=sym)
+            else:
+                sym_result['quality_gate'] = {'verdict': 'SKIP', 'message': 'No valid eval data'}
+                self._step(report, cycle_id, 'QUALITY_SKIP',
+                           f'{sym}: skipped quality check (no eval data)', symbol=sym)
+
             results_by_symbol[sym] = sym_result
 
+        # Global convergence summary
+        gate = QualityGate()
+        convergence = gate.convergence_summary()
         report['results'] = results_by_symbol
+        report['convergence'] = convergence
         report['finished'] = datetime.now(timezone.utc).isoformat()
         self._step(report, cycle_id, 'COMPLETED',
-                   f'Cycle done — {len(results_by_symbol)} symbols processed')
+                   f'Cycle done — {len(results_by_symbol)} symbols | convergence: {convergence.get("status", "?")}')
 
         return report
 
@@ -519,3 +563,175 @@ class TrainingScheduler:
 
             logger.info('Next cycle in %.1f hours...', self.interval / 3600)
             time.sleep(self.interval)
+
+
+# ---------------------------------------------------------------------------
+#  Quality Gates — objective criteria for model readiness
+# ---------------------------------------------------------------------------
+
+class QualityGate:
+    """Define and check objective thresholds for model readiness."""
+
+    # Thresholds — a model must pass ALL to be considered "production-ready"
+    MIN_ACCURACY = 0.54          # >54% on OOS data (random=50%)
+    MIN_RETURN_PCT = 0.5         # >0.5% net return on OOS backtest
+    MAX_DRAWDOWN_PCT = -5.0      # drawdown no worse than -5%
+    MIN_SHARPE = 0.3             # annualized Sharpe > 0.3
+    MIN_WALKFORWARD_FOLDS = 3    # must pass on >= 3 walk-forward folds
+    MIN_FOLD_WINRATE = 0.6       # >= 60% of folds must be profitable
+    CONSECUTIVE_PASS_CYCLES = 3  # must pass for 3 consecutive cycles
+
+    def __init__(self):
+        self.history_file = REPORTS_DIR / 'quality_history.jsonl'
+        self.history_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def evaluate(self, eval_result: dict, walkforward_result: dict | None = None) -> dict:
+        """Check all quality gates. Returns pass/fail per criterion + overall."""
+        checks = {}
+
+        acc = eval_result.get('accuracy', 0)
+        checks['accuracy'] = {
+            'value': acc, 'threshold': self.MIN_ACCURACY,
+            'pass': acc >= self.MIN_ACCURACY,
+        }
+
+        ret = eval_result.get('return_pct', -999)
+        checks['return_pct'] = {
+            'value': ret, 'threshold': self.MIN_RETURN_PCT,
+            'pass': ret >= self.MIN_RETURN_PCT,
+        }
+
+        dd = eval_result.get('max_drawdown_pct', -999)
+        checks['max_drawdown'] = {
+            'value': dd, 'threshold': self.MAX_DRAWDOWN_PCT,
+            'pass': dd >= self.MAX_DRAWDOWN_PCT,
+        }
+
+        # Walk-forward checks
+        if walkforward_result and 'folds' in walkforward_result:
+            folds = walkforward_result['folds']
+            n_folds = len(folds)
+            profitable = sum(1 for f in folds if f.get('return_pct', 0) > 0)
+            fold_winrate = profitable / n_folds if n_folds > 0 else 0
+
+            checks['walkforward_folds'] = {
+                'value': n_folds, 'threshold': self.MIN_WALKFORWARD_FOLDS,
+                'pass': n_folds >= self.MIN_WALKFORWARD_FOLDS,
+            }
+            checks['fold_winrate'] = {
+                'value': fold_winrate, 'threshold': self.MIN_FOLD_WINRATE,
+                'pass': fold_winrate >= self.MIN_FOLD_WINRATE,
+            }
+        else:
+            checks['walkforward_folds'] = {'value': 0, 'threshold': self.MIN_WALKFORWARD_FOLDS, 'pass': False}
+            checks['fold_winrate'] = {'value': 0, 'threshold': self.MIN_FOLD_WINRATE, 'pass': False}
+
+        all_pass = all(c['pass'] for c in checks.values())
+        consecutive = self._count_consecutive_pass() if all_pass else 0
+
+        checks['consecutive_cycles'] = {
+            'value': consecutive + (1 if all_pass else 0),
+            'threshold': self.CONSECUTIVE_PASS_CYCLES,
+            'pass': (consecutive + 1) >= self.CONSECUTIVE_PASS_CYCLES if all_pass else False,
+        }
+
+        overall = all_pass and checks['consecutive_cycles']['pass']
+
+        result = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'overall_pass': overall,
+            'ready_for_live': overall,
+            'checks': checks,
+            'verdict': 'READY' if overall else 'NOT_READY',
+            'message': self._verdict_message(checks, overall),
+        }
+
+        self._record(result)
+        return result
+
+    def _verdict_message(self, checks: dict, overall: bool) -> str:
+        if overall:
+            return 'Model passes all quality gates — ready for live deployment'
+        failing = [name for name, c in checks.items() if not c['pass']]
+        return f'Failing gates: {", ".join(failing)}'
+
+    def _record(self, result: dict):
+        with open(self.history_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(result) + '\n')
+
+    def _count_consecutive_pass(self) -> int:
+        if not self.history_file.exists():
+            return 0
+        lines = self.history_file.read_text(encoding='utf-8').strip().split('\n')
+        count = 0
+        for line in reversed(lines):
+            try:
+                entry = json.loads(line)
+                passed = all(
+                    c['pass'] for name, c in entry.get('checks', {}).items()
+                    if name != 'consecutive_cycles'
+                )
+                if passed:
+                    count += 1
+                else:
+                    break
+            except (json.JSONDecodeError, KeyError):
+                break
+        return count
+
+    def get_history(self, last_n: int = 20) -> list[dict]:
+        if not self.history_file.exists():
+            return []
+        lines = self.history_file.read_text(encoding='utf-8').strip().split('\n')
+        results = []
+        for line in lines[-last_n:]:
+            try:
+                results.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+        return results
+
+    def convergence_summary(self) -> dict:
+        """How close is the model to passing all gates?"""
+        history = self.get_history(last_n=10)
+        if not history:
+            return {'status': 'no_data', 'cycles_completed': 0}
+
+        latest = history[-1]
+        checks = latest.get('checks', {})
+
+        progress = {}
+        for name, c in checks.items():
+            if name == 'consecutive_cycles':
+                continue
+            val = c['value']
+            thresh = c['threshold']
+            if isinstance(val, (int, float)) and isinstance(thresh, (int, float)):
+                if thresh != 0:
+                    pct = min(val / thresh * 100, 100) if thresh > 0 else min(thresh / val * 100, 100) if val < 0 else 100
+                else:
+                    pct = 100 if val >= 0 else 0
+                progress[name] = {
+                    'current': val, 'target': thresh,
+                    'progress_pct': round(pct, 1), 'pass': c['pass'],
+                }
+
+        # Trend: improving or degrading?
+        if len(history) >= 3:
+            recent_acc = [h['checks']['accuracy']['value'] for h in history[-3:] if 'accuracy' in h.get('checks', {})]
+            if len(recent_acc) >= 2:
+                trend = 'improving' if recent_acc[-1] > recent_acc[0] else 'degrading' if recent_acc[-1] < recent_acc[0] else 'stable'
+            else:
+                trend = 'unknown'
+        else:
+            trend = 'insufficient_data'
+
+        return {
+            'status': latest.get('verdict', 'unknown'),
+            'cycles_completed': len(history),
+            'consecutive_pass': latest['checks'].get('consecutive_cycles', {}).get('value', 0),
+            'needed_consecutive': self.CONSECUTIVE_PASS_CYCLES,
+            'progress': progress,
+            'trend': trend,
+            'latest_message': latest.get('message', ''),
+        }
