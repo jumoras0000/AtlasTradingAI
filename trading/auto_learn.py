@@ -137,8 +137,9 @@ class ModelManager:
         proba = model.predict_proba(xtest)[:, 1]
         acc = float(accuracy_score(ytest, (proba >= 0.5).astype(int)))
 
-        # Backtest on test portion
-        targets = np.where(proba >= 0.55, 0.20, 0.0)
+        # Backtest on test portion with confidence sizing
+        from .walkforward import _confidence_sizing
+        targets = _confidence_sizing(proba)
         p_test = features(prices).iloc[n:n + len(targets) + 1]
         if len(p_test) >= 2:
             full_targets = np.zeros(len(p_test))

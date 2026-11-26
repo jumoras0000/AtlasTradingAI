@@ -1,6 +1,6 @@
 starting_cash: 10000.0
-fee_bps: 8
-slippage_bps: 5
+fee_bps: 5
+slippage_bps: 3
 max_exposure: 0.20
 max_daily_loss_fraction: 0.01
 max_drawdown_fraction: 0.05

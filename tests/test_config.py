@@ -11,7 +11,7 @@ def test_make_settings():
     cfg = load_config()
     s = make_settings(cfg)
     assert s.starting_cash == 10000.0
-    assert s.fee_bps == 8
+    assert s.fee_bps == 5
     assert s.risk.max_exposure == 0.20
 
 

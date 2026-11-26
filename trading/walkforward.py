@@ -11,6 +11,26 @@ from .ml import COLS
 from .risk import RiskConfig
 
 
+def _confidence_sizing(proba: np.ndarray, max_exposure: float = 0.20) -> np.ndarray:
+    """Scale exposure by signal confidence with hysteresis to reduce turnover."""
+    targets = np.zeros(len(proba))
+    current = 0.0
+    for i, p in enumerate(proba):
+        if p >= 0.58:
+            desired = max_exposure
+        elif p >= 0.53:
+            desired = max_exposure * 0.5
+        elif p <= 0.42:
+            desired = 0.0
+        else:
+            desired = current  # no change in dead zone -> reduces turnover
+        # Hysteresis: only change if delta is significant
+        if abs(desired - current) >= 0.05:
+            current = desired
+        targets[i] = current
+    return targets
+
+
 def walk_forward_xgb(prices: pd.DataFrame, min_train: int = 300,
                      test_window: int = 100, step: int = 50,
                      settings: BacktestSettings | None = None,
@@ -30,8 +50,9 @@ def walk_forward_xgb(prices: pd.DataFrame, min_train: int = 300,
 
     s = settings or BacktestSettings()
     params = xgb_params or dict(
-        n_estimators=80, max_depth=3, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.9, random_state=42, n_jobs=2
+        n_estimators=200, max_depth=5, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, reg_alpha=0.01, reg_lambda=0.5,
+        min_child_weight=3, gamma=0.01, random_state=42, n_jobs=2,
     )
 
     folds = []
@@ -54,7 +75,7 @@ def walk_forward_xgb(prices: pd.DataFrame, min_train: int = 300,
         preds = (proba >= 0.5).astype(int)
         acc = float(accuracy_score(ytest, preds))
 
-        targets = np.where(proba >= 0.55, 0.20, 0.0)
+        targets = _confidence_sizing(proba)
         # Build full-length target array for simulate (needs features-length)
         p_test = features(prices).iloc[cursor:cursor + test_window + 1]
         if len(p_test) >= 2:
