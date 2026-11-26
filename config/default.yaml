@@ -1,0 +1,10 @@
+starting_cash: 10000.0
+fee_bps: 8
+slippage_bps: 5
+max_exposure: 0.20
+max_daily_loss_fraction: 0.01
+max_drawdown_fraction: 0.05
+max_trade_fraction: 0.10
+min_bars: 60
+initial_training_fraction: 0.70
+symbol: EURUSD_DEMO
