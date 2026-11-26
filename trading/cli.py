@@ -57,6 +57,27 @@ def main(argv=None):
     cf = sub.add_parser('compare-fees')
     cf.add_argument('--csv', default='data/demo.csv')
 
+    lv = sub.add_parser('live')
+    lv.add_argument('--symbol', default='EURUSD')
+    lv.add_argument('--timeframe', default='H1', choices=['M1', 'M5', 'M15', 'H1', 'H4', 'D1'])
+    lv.add_argument('--strategy', default='ema', choices=['ema', 'xgb', 'ppo'])
+    lv.add_argument('--model', default='models/xgb.json')
+    lv.add_argument('--interval', type=int, default=0)
+    lv.add_argument('--max-iter', type=int, default=0)
+    lv.add_argument('--once', action='store_true')
+
+    hc = sub.add_parser('health-check')
+    hc.add_argument('--symbol', default='EURUSD')
+
+    rc = sub.add_parser('reconcile')
+    rc.add_argument('--symbol', default='EURUSD')
+    rc.add_argument('--expected', type=float, default=0.0)
+
+    ac = sub.add_parser('account')
+
+    cl = sub.add_parser('close-all')
+    cl.add_argument('--symbol', default='EURUSD')
+
     args = ap.parse_args(argv)
 
     if args.cmd == 'generate-demo':
@@ -138,6 +159,32 @@ def main(argv=None):
                 'total_cost': summary['total_cost'],
             }
         print(json.dumps(results, indent=2))
+
+    elif args.cmd == 'live':
+        from .live_loop import LiveTrader
+        interval = args.interval or {'M1': 60, 'M5': 300, 'H1': 3600, 'H4': 14400, 'D1': 86400}.get(args.timeframe, 3600)
+        trader = LiveTrader(args.symbol, args.timeframe, args.strategy, model_path=args.model)
+        if args.once:
+            print(json.dumps(trader.run_once(), indent=2))
+        else:
+            trader.run_loop(interval_seconds=interval, max_iterations=args.max_iter)
+
+    elif args.cmd == 'health-check':
+        from .reconciliation import full_health_check
+        print(json.dumps(full_health_check(args.symbol), indent=2))
+
+    elif args.cmd == 'reconcile':
+        from .reconciliation import reconcile
+        print(json.dumps(reconcile(args.symbol, args.expected), indent=2))
+
+    elif args.cmd == 'account':
+        from .mt5_executor import get_account_info
+        print(json.dumps(get_account_info(), indent=2))
+
+    elif args.cmd == 'close-all':
+        from .mt5_executor import close_all
+        results = close_all(args.symbol)
+        print(json.dumps([r.__dict__ for r in results], indent=2))
 
 
 if __name__ == '__main__':

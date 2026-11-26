@@ -6,3 +6,4 @@ models/*.zip
 models/*.json
 reports/*.json
 reports/*.csv
+logs/

@@ -19,6 +19,41 @@ def status():
     return {'mode': 'OFFLINE / NO LIVE ORDERS', 'reports': reports}
 
 
+@app.get('/api/live')
+def live_status():
+    """Live trading status — returns positions and account if MT5 is available."""
+    try:
+        from .mt5_executor import get_account_info, get_positions
+        from .reconciliation import check_session_hours
+        account = get_account_info()
+        positions = get_positions()
+        session = check_session_hours()
+        return {
+            'connected': True,
+            'account': account,
+            'positions': positions,
+            'session': session,
+        }
+    except Exception as e:
+        return {'connected': False, 'error': str(e)}
+
+
+@app.get('/api/trade-log')
+def trade_log():
+    """Return recent trade log entries."""
+    log_file = Path('logs/trades.jsonl')
+    if not log_file.exists():
+        return {'entries': []}
+    lines = log_file.read_text(encoding='utf-8').strip().split('\n')
+    entries = []
+    for line in lines[-100:]:
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return {'entries': entries}
+
+
 @app.get('/api/equity')
 def equity():
     """Return equity curve data from latest backtest CSV."""
@@ -92,6 +127,7 @@ pre{white-space:pre-wrap;background:var(--surface);padding:1.25rem;border-radius
 <div class="tab-row">
   <div class="tab active" onclick="showSection('equity')">Equity</div>
   <div class="tab" onclick="showSection('walkforward')">Walk-Forward</div>
+  <div class="tab" onclick="showSection('live')">Live MT5</div>
   <div class="tab" onclick="showSection('reports')">Rapports</div>
 </div>
 
@@ -103,6 +139,12 @@ pre{white-space:pre-wrap;background:var(--surface);padding:1.25rem;border-radius
   <div class="chart-box"><h2>Walk-Forward: Accuracy par Fold</h2><canvas id="wfAccChart"></canvas></div>
   <div class="chart-box"><h2>Walk-Forward: Return par Fold</h2><canvas id="wfRetChart"></canvas></div>
   <div id="wf-summary"></div>
+</div>
+
+<div class="section" id="sec-live">
+  <div class="grid" id="live-account"></div>
+  <div class="chart-box"><h2>Positions ouvertes</h2><div id="live-positions">Connexion MT5 requise...</div></div>
+  <div class="chart-box"><h2>Journal de trades</h2><pre id="trade-log" style="max-height:300px;overflow:auto">Aucun trade</pre></div>
 </div>
 
 <div class="section" id="sec-reports">
@@ -213,6 +255,45 @@ async function init() {
       kpiCard('Mean Return', wf.mean_return_pct.toFixed(2) + '%', wf.mean_return_pct >= 0 ? 'positive' : 'negative') +
       kpiCard('Cumul Return', wf.cumulative_return_pct.toFixed(2) + '%', wf.cumulative_return_pct >= 0 ? 'positive' : 'negative') +
       '</div>';
+  }
+
+  // Live MT5 panel
+  try {
+    const live = await fetch('/api/live').then(r => r.json());
+    const liveDiv = document.getElementById('live-account');
+    if (live.connected) {
+      const a = live.account;
+      liveDiv.innerHTML =
+        kpiCard('Balance', '$' + a.balance.toFixed(2)) +
+        kpiCard('Equity', '$' + a.equity.toFixed(2)) +
+        kpiCard('Free Margin', '$' + a.margin_free.toFixed(2)) +
+        kpiCard('Server', a.server) +
+        kpiCard('Market', live.session.market_open ? '<span class="positive">OPEN</span>' : '<span class="negative">CLOSED</span>');
+
+      const posDiv = document.getElementById('live-positions');
+      if (live.positions.length === 0) {
+        posDiv.textContent = 'Aucune position ouverte';
+      } else {
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:.85rem">' +
+          '<tr style="border-bottom:1px solid var(--border)"><th>Ticket</th><th>Symbol</th><th>Type</th><th>Volume</th><th>Prix</th><th>P/L</th></tr>';
+        for (const p of live.positions) {
+          const cls = p.profit >= 0 ? 'positive' : 'negative';
+          html += `<tr><td>${p.ticket}</td><td>${p.symbol}</td><td>${p.type}</td><td>${p.volume}</td><td>${p.price_open.toFixed(5)}</td><td class="${cls}">${p.profit.toFixed(2)}</td></tr>`;
+        }
+        html += '</table>';
+        posDiv.innerHTML = html;
+      }
+    } else {
+      liveDiv.innerHTML = kpiCard('MT5', '<span class="negative">Non connecté</span>');
+      document.getElementById('live-positions').textContent = live.error || 'MT5 non disponible';
+    }
+
+    const tlog = await fetch('/api/trade-log').then(r => r.json());
+    if (tlog.entries.length > 0) {
+      document.getElementById('trade-log').textContent = tlog.entries.map(e => JSON.stringify(e)).join('\\n');
+    }
+  } catch(e) {
+    document.getElementById('live-account').innerHTML = kpiCard('MT5', '<span class="negative">Non connecté</span>');
   }
 }
 init();
