@@ -109,4 +109,8 @@ def features(df: pd.DataFrame) -> pd.DataFrame:
     p['upper_shadow'] = (h - pd.concat([c, p.open], axis=1).max(axis=1)) / full_range
     p['lower_shadow'] = (pd.concat([c, p.open], axis=1).min(axis=1) - l) / full_range
 
+    # Macro/regime features
+    from .macro_features import add_macro_features
+    p = add_macro_features(p)
+
     return p.replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)

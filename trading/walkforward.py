@@ -11,20 +11,28 @@ from .ml import COLS
 from .risk import RiskConfig
 
 
-def _confidence_sizing(proba: np.ndarray, max_exposure: float = 0.20) -> np.ndarray:
-    """Scale exposure by signal confidence with hysteresis to reduce turnover."""
+def _confidence_sizing(proba: np.ndarray, max_exposure: float = 0.20,
+                       adaptive: bool = True) -> np.ndarray:
+    """Scale exposure by signal confidence with hysteresis to reduce turnover.
+    adaptive=True uses quantile thresholds when proba range is compressed."""
+    if adaptive and proba.std() < 0.03:
+        hi = np.quantile(proba, 0.80)
+        mid = np.quantile(proba, 0.60)
+        lo = np.quantile(proba, 0.20)
+    else:
+        hi, mid, lo = 0.58, 0.53, 0.42
+
     targets = np.zeros(len(proba))
     current = 0.0
     for i, p in enumerate(proba):
-        if p >= 0.58:
+        if p >= hi:
             desired = max_exposure
-        elif p >= 0.53:
+        elif p >= mid:
             desired = max_exposure * 0.5
-        elif p <= 0.42:
+        elif p <= lo:
             desired = 0.0
         else:
-            desired = current  # no change in dead zone -> reduces turnover
-        # Hysteresis: only change if delta is significant
+            desired = current
         if abs(desired - current) >= 0.05:
             current = desired
         targets[i] = current
@@ -34,7 +42,8 @@ def _confidence_sizing(proba: np.ndarray, max_exposure: float = 0.20) -> np.ndar
 def walk_forward_xgb(prices: pd.DataFrame, min_train: int = 300,
                      test_window: int = 100, step: int = 50,
                      settings: BacktestSettings | None = None,
-                     xgb_params: dict | None = None) -> dict:
+                     xgb_params: dict | None = None,
+                     horizon: int = 1) -> dict:
     """Expanding-window walk-forward: train on [0..i], test on [i..i+test_window].
     Returns aggregated metrics across all folds.
     """
@@ -42,8 +51,8 @@ def walk_forward_xgb(prices: pd.DataFrame, min_train: int = 300,
     from sklearn.metrics import accuracy_score
 
     p = features(prices)
-    p['label'] = (p.close.shift(-1) > p.close).astype(int)
-    p = p.iloc[:-1].copy()
+    p['label'] = (p.close.shift(-horizon) > p.close).astype(int)
+    p = p.iloc[:-horizon].copy()
 
     if len(p) < min_train + test_window:
         raise ValueError(f'Need {min_train + test_window} bars, got {len(p)}')
@@ -81,10 +90,12 @@ def walk_forward_xgb(prices: pd.DataFrame, min_train: int = 300,
         if len(p_test) >= 2:
             full_targets = np.zeros(len(p_test))
             full_targets[:len(targets)] = targets[:len(full_targets)]
-            summary, _ = simulate(p_test, full_targets, s)
+            summary, detail = simulate(p_test, full_targets, s)
             fold_return = summary['net_return_pct']
+            fold_trades = int(summary.get('n_trades', (detail.turnover > 0).sum()))
+            fold_dd = summary.get('max_drawdown_pct', 0.0)
         else:
-            fold_return = 0.0
+            fold_return, fold_trades, fold_dd = 0.0, 0, 0.0
 
         folds.append({
             'fold_start': cursor,
@@ -93,6 +104,8 @@ def walk_forward_xgb(prices: pd.DataFrame, min_train: int = 300,
             'test_bars': test_window,
             'accuracy': acc,
             'return_pct': fold_return,
+            'n_trades': fold_trades,
+            'max_drawdown_pct': fold_dd,
         })
         cursor += step
 

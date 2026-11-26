@@ -17,31 +17,41 @@ COLS = [
     'stoch_k', 'stoch_d',
     'hl_ratio',
     'body_ratio', 'upper_shadow', 'lower_shadow',
+    # Macro/regime features
+    'vol_regime', 'adx', 'di_diff', 'price_zscore',
+    'donchian_pct', 'roc_50', 'roc_100', 'is_trending',
 ]
 COLS_WITH_NEWS = COLS + ['news_inflation', 'news_rates', 'news_employment', 'news_total']
 
-def train_xgb(prices,output='models/xgb.json',fraction=0.7):
+def train_xgb(prices, output='models/xgb.json', fraction=0.7, horizon=1):
     from xgboost import XGBClassifier
     from sklearn.metrics import accuracy_score
-    p=features(prices)
-    # close(t+1) target is constructed only for LABELING historical train rows.
-    p['label']=(p.close.shift(-1)>p.close).astype(int)
-    p=p.iloc[:-1].copy()
-    n=int(len(p)*fraction)
-    if n<50 or len(p)-n<20:raise ValueError('Insufficient train/test split')
-    xtrain=p.iloc[:n][COLS];ytrain=p.iloc[:n].label
-    xtest=p.iloc[n:][COLS];ytest=p.iloc[n:].label
-    if ytrain.nunique()<2:raise ValueError('Only one class in training labels')
-    model=XGBClassifier(n_estimators=200,max_depth=5,learning_rate=0.05,
-                        subsample=0.8,colsample_bytree=0.8,reg_alpha=0.01,reg_lambda=0.5,
-                        min_child_weight=3,gamma=0.01,random_state=42,n_jobs=2,
-                        early_stopping_rounds=30,eval_metric='logloss')
-    model.fit(xtrain,ytrain,eval_set=[(xtest,ytest)],verbose=False)
-    scores=model.predict_proba(xtest)[:,1]
-    path=Path(output);path.parent.mkdir(parents=True,exist_ok=True);model.save_model(str(path))
-    return {'train_bars':n,'test_bars':len(p)-n,
-            'test_accuracy':float(accuracy_score(ytest,scores>=0.5)),
-            'note':'Classification metric, NOT trading profitability. Test data was never fitted.'}
+    p = features(prices)
+    p['label'] = (p.close.shift(-horizon) > p.close).astype(int)
+    p = p.iloc[:-horizon].copy()
+    n = int(len(p) * fraction)
+    if n < 50 or len(p) - n < 20:
+        raise ValueError('Insufficient train/test split')
+    xtrain, ytrain = p.iloc[:n][COLS], p.iloc[:n].label
+    xtest, ytest = p.iloc[n:][COLS], p.iloc[n:].label
+    if ytrain.nunique() < 2:
+        raise ValueError('Only one class in training labels')
+    model = XGBClassifier(
+        n_estimators=200, max_depth=5, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, reg_alpha=0.01, reg_lambda=0.5,
+        min_child_weight=3, gamma=0.01, random_state=42, n_jobs=2,
+        early_stopping_rounds=30, eval_metric='logloss',
+    )
+    model.fit(xtrain, ytrain, eval_set=[(xtest, ytest)], verbose=False)
+    scores = model.predict_proba(xtest)[:, 1]
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    model.save_model(str(path))
+    return {
+        'train_bars': n, 'test_bars': len(p) - n, 'horizon': horizon,
+        'test_accuracy': float(accuracy_score(ytest, scores >= 0.5)),
+        'note': 'Classification metric, NOT trading profitability. Test data was never fitted.',
+    }
 
 def xgb_targets(prices, model_path='models/xgb.json'):
     from xgboost import XGBClassifier

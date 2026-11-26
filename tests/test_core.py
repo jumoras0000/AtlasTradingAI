@@ -8,9 +8,9 @@ from trading.news import keyword_tag
 
 def test_demo_valid(tmp_path):
     p=tmp_path/'prices.csv'
-    generate_demo(p,n=180)
+    generate_demo(p,n=300)
     df=load_prices(p)
-    assert len(df)==180
+    assert len(df)==300
     assert df.time.dt.tz is not None
     assert len(features(df))>100
 

@@ -93,9 +93,14 @@ def main(argv=None):
     mt.add_argument('--once', action='store_true')
 
     rt = sub.add_parser('retrain')
+    rt.add_argument('--symbol', default='EURUSD')
+    rt.add_argument('--timeframe', default='H1', choices=['H1', 'H4', 'D1'])
+    rt.add_argument('--bars', type=int, default=2000)
 
     qc = sub.add_parser('quality-check')
     qc.add_argument('--symbol', default='EURUSD')
+    qc.add_argument('--timeframe', default='H1', choices=['H1', 'H4', 'D1'])
+    qc.add_argument('--bars', type=int, default=2000)
 
     cv = sub.add_parser('convergence')
 
@@ -241,9 +246,10 @@ def main(argv=None):
         from .auto_learn import QualityGate, ModelManager
         from .walkforward import walk_forward_xgb
         mgr = ModelManager(args.symbol)
-        prices = mgr.collect_latest_data(count=2000)
+        prices = mgr.collect_latest_data(count=args.bars, timeframe=args.timeframe)
         eval_result = mgr.evaluate_model(prices, mgr.active_model)
-        wf = walk_forward_xgb(prices, min_train=300, test_window=100, step=50)
+        min_train = 200 if args.timeframe == 'D1' else 300
+        wf = walk_forward_xgb(prices, min_train=min_train, test_window=100, step=50)
         gate = QualityGate()
         result = gate.evaluate(eval_result, wf)
         print(f"\n{'Gate':<25} {'Value':>10} {'Threshold':>10} {'Status':>8}")
@@ -275,7 +281,8 @@ def main(argv=None):
 
     elif args.cmd == 'retrain':
         from .auto_learn import AutoLearner
-        learner = AutoLearner()
+        learner = AutoLearner(symbol=args.symbol, timeframe=args.timeframe)
+        learner.manager.collect_latest_data(count=args.bars, timeframe=args.timeframe)
         result = learner.force_retrain()
         print(json.dumps(result, indent=2))
 

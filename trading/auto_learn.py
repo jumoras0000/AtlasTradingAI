@@ -107,12 +107,15 @@ class ModelManager:
             logger.info('Archived model -> %s', dest)
 
     def collect_latest_data(self, count: int = 2000, timeframe: str = 'H1') -> pd.DataFrame:
-        """Fetch fresh bars from MT5 and save to data/live.csv."""
-        from .mt5_bridge import read_demo_bars
-        df = read_demo_bars(self.symbol, count=count, timeframe=timeframe)
-        path = DATA_DIR / 'live.csv'
+        """Fetch fresh bars from MT5 and save to data/live_{symbol}_{tf}.csv."""
+        from .scanner import fetch_bars
+        df = fetch_bars(self.symbol, count=count, timeframe=timeframe)
+        if df is None or len(df) < 100:
+            from .mt5_bridge import read_demo_bars
+            df = read_demo_bars(self.symbol, count=count, timeframe=timeframe)
+        path = DATA_DIR / f'live_{self.symbol}_{timeframe}.csv'
         df.to_csv(path, index=False)
-        logger.info('Collected %d bars -> %s', len(df), path)
+        logger.info('Collected %d %s bars for %s -> %s', len(df), timeframe, self.symbol, path)
         return df
 
     def evaluate_model(self, prices: pd.DataFrame, model_path: Path,
