@@ -8,3 +8,18 @@ max_trade_fraction: 0.10
 min_bars: 60
 initial_training_fraction: 0.70
 symbol: EURUSD_DEMO
+
+# Realistic fee profiles (use with --profile in CLI)
+profiles:
+  conservative:
+    fee_bps: 12
+    slippage_bps: 8
+  realistic:
+    fee_bps: 8
+    slippage_bps: 5
+  optimistic:
+    fee_bps: 3
+    slippage_bps: 2
+  zero:
+    fee_bps: 0
+    slippage_bps: 0

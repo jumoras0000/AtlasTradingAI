@@ -45,6 +45,18 @@ def main(argv=None):
     w.add_argument('--step', type=int, default=50)
     w.add_argument('--prefix', default='walkforward')
 
+    ep = sub.add_parser('eval-ppo')
+    ep.add_argument('--csv', default='data/demo.csv')
+    ep.add_argument('--model', default='models/ppo.zip')
+    ep.add_argument('--prefix', default='ppo_oos')
+
+    xn = sub.add_parser('train-xgb-news')
+    xn.add_argument('--csv', default='data/demo.csv')
+    xn.add_argument('--news', default='data/news.json')
+
+    cf = sub.add_parser('compare-fees')
+    cf.add_argument('--csv', default='data/demo.csv')
+
     args = ap.parse_args(argv)
 
     if args.cmd == 'generate-demo':
@@ -92,6 +104,40 @@ def main(argv=None):
         write_walkforward_report(result, prefix=args.prefix)
         summary = {k: v for k, v in result.items() if k != 'folds'}
         print(json.dumps(summary, indent=2))
+
+    elif args.cmd == 'eval-ppo':
+        from .eval_ppo import evaluate_ppo, write_eval_report
+        prices = load_prices(args.csv)
+        result = evaluate_ppo(prices, model_path=args.model)
+        write_eval_report(result, prefix=args.prefix)
+        print(json.dumps(result, indent=2))
+
+    elif args.cmd == 'train-xgb-news':
+        from .ml import train_xgb_with_news
+        result = train_xgb_with_news(load_prices(args.csv), news_path=args.news)
+        print(json.dumps(result, indent=2))
+
+    elif args.cmd == 'compare-fees':
+        from .config import load_config, make_settings
+        cfg = load_config()
+        profiles = cfg.get('profiles', {})
+        prices = load_prices(args.csv)
+        data = features(prices)
+        targets = ema_signals(data)
+        results = {}
+        for name, overrides in profiles.items():
+            merged = {**cfg, **overrides}
+            s = make_settings(merged)
+            summary, detail = simulate(data, targets, s)
+            write_report(summary, detail, prefix=f'fees_{name}')
+            results[name] = {
+                'fee_bps': overrides.get('fee_bps', cfg['fee_bps']),
+                'slippage_bps': overrides.get('slippage_bps', cfg['slippage_bps']),
+                'net_return_pct': summary['net_return_pct'],
+                'max_drawdown_pct': summary['max_drawdown_pct'],
+                'total_cost': summary['total_cost'],
+            }
+        print(json.dumps(results, indent=2))
 
 
 if __name__ == '__main__':
